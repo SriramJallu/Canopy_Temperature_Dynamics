@@ -1,0 +1,1047 @@
+// Authors: Riyaz Shaik, Sriram Jallu., 2022
+// Canopy Height Calculations.
+
+
+//Region of Interest
+//Before running the code, name the imported shapefile as "roi"
+
+
+//Projection [Change it as per the study area]
+var crs_roi = 'EPSG:32735';
+
+var startDate = '2020-08-01';
+var endDate = '2020-10-31';
+
+// Load Sentinel-1 for the post-rainy season.
+var S1_PRS = ee.ImageCollection('COPERNICUS/S1_GRD')
+    .filterDate(startDate, endDate)                                     //Date Range for the study
+    .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV'))
+    .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VH'))
+    .filter(ee.Filter.eq('instrumentMode', 'IW'))
+    .filter(ee.Filter.eq('orbitProperties_pass', 'DESCENDING'))                 //As per the Region of Interest
+    .filterBounds(roi1);
+
+
+print('Images', S1_PRS); 
+// Prepare inter-quartile range (IQR) 
+var S1_PRS_pc = S1_PRS.reduce(ee.Reducer.percentile([20,50,80]));
+
+print('Images_PC', S1_PRS_pc);
+
+// Convert to natural units (linear units, which can be averaged)
+var S1_PRS_pc = ee.Image(10).pow(S1_PRS_pc.divide(10));
+
+print('Images_PC_2', S1_PRS_pc);
+
+var S1_PRS_pc_Feats = S1_PRS_pc.select(['VH_p50','VV_p50']).clip(roi1);
+
+// Reproject to Region of Interst                
+var S1_PRS_pc_Feats = S1_PRS_pc_Feats.reproject({crs: crs_roi,scale: 30});
+
+// Check projection information
+print('Projection, crs, and crs_transform:', S1_PRS_pc_Feats.projection());    
+
+// Calculate IQR for the VV polarization
+var PRS_VV_iqr = S1_PRS_pc_Feats
+	.addBands((S1_PRS_pc.select('VV_p80')
+	.subtract(S1_PRS_pc.select('VV_p20')))
+	.rename('VV_iqr'));
+
+// Calculate IQR for the VH polarization
+var PRS_VH_iqr = S1_PRS_pc_Feats
+	.addBands((S1_PRS_pc.select('VH_p80')
+	.subtract(S1_PRS_pc.select('VH_p20')))
+	.rename('VH_iqr'));
+
+// Print the image to the console
+print('Post-rainy Season VV IQR', PRS_VV_iqr);
+
+// Print the image to the console
+print('Post-rainy Season VH IQR', PRS_VH_iqr);
+
+// Display S1 inter-quartile range imagery
+//Map.addLayer(PRS_VV_iqr.clip(roi), {'bands': 'VV_iqr', min: 0,max: 0.1}, 'Sentinel-1 IW VV');
+//Map.addLayer( PRS_VH_iqr.clip(roi), {'bands': 'VH_iqr', min: 0,max: 0.1}, 'Sentinel-1 IW VH');
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////
+// Load Sentinel-2 spectral reflectance data.
+var s2 = ee.ImageCollection('COPERNICUS/S2_SR');
+
+// Create a function to mask clouds using the Sentinel-2 QA band.
+function maskS2clouds(image) {
+  var qa = image.select('QA60');
+
+  // Bits 10 and 11 are clouds and cirrus, respectively.
+  var cloudBitMask = ee.Number(2).pow(10).int();
+  var cirrusBitMask = ee.Number(2).pow(11).int();
+
+  // Both flags should be set to zero, indicating clear conditions.
+  var mask = qa.bitwiseAnd(cloudBitMask).eq(0).and(
+             qa.bitwiseAnd(cirrusBitMask).eq(0));
+
+  // Return the masked and scaled data.
+  return image.updateMask(mask).divide(10000);
+}
+
+// Filter clouds from Sentinel-2 for the date range of study
+var composite = s2.filterDate(startDate, endDate)
+                  // Pre-filter to get less cloudy granules.
+                  .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 10))
+                  .map(maskS2clouds)
+                  .select('B2', 'B3', 'B4','B5','B6','B7','B8','B11', 'B12'); 
+
+// Reproject to Region of Interest (Change the Projection Code)                  
+var S2_composite = composite.median().reproject({crs: crs_roi, scale: 30});
+
+print('S2_Composite', S2_composite);
+// Check projection information                 
+print('S2_Projection, crs, and crs_transform:', S2_composite.projection());
+
+// Display a composite S2 imagery
+//Map.addLayer(S2_composite.clip(roi), {bands: ['B11', 'B8', 'B3'], min: 0, max: 0.3}, 'S2_Composite');
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////
+// Load SRTM
+var SRTM = ee.Image("USGS/SRTMGL1_003");
+// Clip Elevation
+var elevation = SRTM.clip(roi1);
+
+// Reproject Elevation to the Region of Interest (Change the Projection Code)                
+var elevation = elevation.reproject({crs: crs_roi,scale: 30});
+  
+// Check projection information
+print('DEM_Projection, crs, and crs_transform:', elevation.projection()); 
+print('Elevation', elevation)
+//Map.addLayer(elevation, {bands: 'elevation', min: 0, max: 1000}, 'DEM');
+
+// Derive slope from the SRTM
+var slope = ee.Terrain.slope(SRTM).clip(roi1);
+
+// Reproject Slope to the Region of Interst (Change the Projection Code)              
+var slope = slope.reproject({crs: crs_roi,scale: 30});
+  
+// Check projection information
+print('Slope_Projection, crs, and crs_transform:', slope.projection()); 
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// Load ESA World Cover data
+var dataset = ee.ImageCollection("ESA/WorldCover/v200").first();
+
+
+// Clip the land cover to the boundary
+var ESA_LC_2021 = dataset.clip(roi1);
+print('Land_Cover',ESA_LC_2021)
+
+// Extract forest areas from the land cover
+var forest_mask = ESA_LC_2021.updateMask(ESA_LC_2021.eq(10));
+
+// Display forests only
+//Map.addLayer(forest_mask, {bands: ['Map'],}, "Trees");
+
+
+//////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////////
+//LANDSAT Indices
+
+// cloud masking
+// Define binary masks for cloud and cloud shadow
+var cloudShadowBitMask = (1<<3);
+var cloudsBitMask = (1<<4);
+
+// Function to mask clouds and cloud shadows
+var cloudMask = function(image) {
+  var qa = image.select('QA_PIXEL');
+  var mask = qa.bitwiseAnd(cloudsBitMask).eq(0)
+                .and(qa.bitwiseAnd(cloudShadowBitMask).eq(0));
+  return image.updateMask(mask);
+};
+
+// Load Landsat 8 TOA data and filter for the study area and time period
+var l8 = ee.ImageCollection('LANDSAT/LC08/C02/T1_L2')
+  .filterBounds(roi1)
+  .filterDate(startDate, endDate)
+  .map(cloudMask);
+  //.mean()
+  //.clip(studyArea);
+  
+// Applies scaling factors.
+function applyScaleFactors(image) {
+  var opticalBands = image.select('SR_B.').multiply(0.0000275).add(-0.2);
+  var thermalBands = image.select('ST_B.*').multiply(0.00341802).add(149.0);
+  return image.addBands(opticalBands, null, true)
+              .addBands(thermalBands, null, true);
+}
+
+var l8 = l8.map(applyScaleFactors);
+
+var l8 = l8.median().clip(roi1);
+
+var l8 = l8.select(0,1,2,3,4,5,6)//.mean().clip(studyArea);
+
+// Define the function to calculate EVI
+var addEVI = function(image) {
+  var evi = image.expression('2.5 * ((N - R) / (N + 6 * R - 7.5 * B + 1))', {
+            'N': image.select('SR_B5'), // Use SR_B5 instead of B5
+            'R': image.select('SR_B4'), // Use SR_B4 instead of B4
+            'B': image.select('SR_B2')  // Use SR_B2 instead of B2
+        }).rename('EVI');
+  return image.addBands(evi);
+};
+
+// Add EVI to the image
+var l8 = addEVI(l8);
+
+// Calculate NDVI
+// Define the function to calculate NDVI
+var addNDVI = function(image) {
+  var ndvi = image.expression('(N - R)/(N + R)', {
+            'N': image.select('SR_B5'), // Use SR_B5 instead of B5
+            'R': image.select('SR_B4')  // Use SR_B4 instead of B4
+        }).rename('NDVI');
+  return image.addBands(ndvi);
+};
+
+// Add NDVI to the image
+var l8 = addNDVI(l8);
+
+// Define function to calculate SAVI
+var addSAVI = function(image) {
+  var savi = image.expression('(1.0 + 0.5) * (N - R) / (N + R + 0.5)', {
+    'N': image.select('SR_B5'),
+    'R': image.select('SR_B4')
+  }).rename('SAVI');
+  return image.addBands(savi);
+};
+
+// Add NDVI to the image
+var l8 = addSAVI(l8);
+
+// Define function to calculate MSAVI
+
+var addMSAVI = function(image) {
+  var msavi = image.expression('0.5 * (2.0 * N + 1 - (((2 * N + 1) ** 2) - 8 * (N - R)) ** 0.5)', {
+    'N': image.select('SR_B5'),
+    'R': image.select('SR_B4')
+  }).rename('MSAVI');
+  return image.addBands(msavi);
+};
+
+// Add NDVI to the image
+var l8 = addMSAVI(l8);
+
+// Define function to calculate NDWI
+var addNDWI = function(image) {
+  var ndwi = image.expression('(G - N) / (G + N)', {
+    'N': image.select('SR_B5'),
+    'G': image.select('SR_B3')
+  }).rename('NDWI');
+  return image.addBands(ndwi);
+};
+
+// Add NDWI to the image
+var l8 = addNDWI(l8);
+
+// Define function to calculate Visible Atmospherically Resistant Index (VARI)
+var addVARI = function(image) {
+  var vari = image.expression('(G - R) / (G + R - B)', {
+    'R': image.select('SR_B4'),
+    'B': image.select('SR_B2'),
+    'G': image.select('SR_B3')
+  }).rename('VARI');
+  return image.addBands(vari);
+};
+
+// Add VARI to the image
+var l8 = addVARI(l8);
+
+// Define function to calculate Tasseled Cap Brightness (TCB)
+var addTCB = function (image) {
+  var tcb = image.expression('0.2043 * B + 0.5524 * R + 0.4158 * G + 0.5741 * N + 0.3124 * SW1 + 0.2303 * SW2', {
+            'R': image.select('SR_B4'),
+            'B': image.select('SR_B2'),
+            'N': image.select('SR_B5'),
+            'SW1': image.select('SR_B6'),
+            'SW2': image.select('SR_B7'),
+            'G': image.select('SR_B3')
+        }).rename('TCB');
+  return image.addBands(tcb);
+};
+
+// Add TCB to the image
+var l8 = addTCB(l8);
+
+// Define function to calculate TCG
+
+var addTCG = function (image) {
+  var tcg = image.expression('-0.1603 * B - 0.4934 * R + 0.2819 * G + 0.7940 * N - 0.0002 * SW1 - 0.1446 * SW2', {
+            'R': image.select('SR_B4'),
+            'B': image.select('SR_B2'),
+            'N': image.select('SR_B5'),
+            'SW1': image.select('SR_B6'),
+            'SW2': image.select('SR_B7'),
+            'G': image.select('SR_B3')
+        }).rename('TCG');
+  return image.addBands(tcg);
+}
+
+// Add TCG to the image
+var l8 = addTCG(l8);
+
+// Define function to calculate TCW
+
+var addTCW = function (image) {
+  var tcw = image.expression('0.0315 * B + 0.3102 * R + 0.2021 * G + 0.1594 * N - 0.6806 * SW1 - 0.6109 * SW2', {
+            'R': image.select('SR_B4'),
+            'B': image.select('SR_B2'),
+            'N': image.select('SR_B5'),
+            'SW1': image.select('SR_B6'),
+            'SW2': image.select('SR_B7'),
+            'G': image.select('SR_B3')
+        }).rename('TCW');
+  return image.addBands(tcw);
+};
+
+// Add TCW to the image
+var l8 = addTCW(l8);
+
+// Define function to calculate NBR
+
+var addNBR = function (image) {
+  var nbr = image.expression('(N - SW2)/(N + SW2)', {
+            'N': image.select('SR_B5'),
+            'SW2': image.select('SR_B7')
+        }).rename('NBR');
+    return image.addBands(nbr);
+};
+
+// Add NBR to the image
+var l8 = addNBR(l8);
+
+// Define function to calculate AFVI
+
+var addAFVI = function (image) {
+  var afvi = image.expression('N - 0.66 * (SW1 / (N + 0.66 * SW1))', {
+            'N': image.select('SR_B5'),
+            'SW1': image.select('SR_B6')
+        }).rename('AFVI');
+    return image.addBands(afvi);
+};
+
+// Add AFVI to the image
+var l8 = addAFVI(l8);
+
+// Define function to calculate AVI
+var addAVI = function(image){
+  var avi = image.expression('2.0 * N - R', {
+            'R': image.select('SR_B4'),
+            'N': image.select('SR_B5')
+        }).rename('AVI');
+    return image.addBands(avi);
+};
+
+// Add AVI to the image
+var l8 = addAVI(l8);
+
+//Define function to calculate bwdrvi
+var addBWDRVI = function(image) {
+  var bwdrvi = image.expression('(0.1* N - B) / (0.1* N + B)', {
+            'B': image.select('SR_B2'),
+            'N': image.select('SR_B5')
+          }).rename('BWDRVI');
+  return image.addBands(bwdrvi);
+};
+
+// Add BWDRVI to the image
+var l8 = addBWDRVI(l8);
+
+// Define function to calculate CVI
+var addCVI = function(image) {
+  var cvi = image.expression('N * R / G ** 2', {
+      'R': image.select('SR_B4'),
+      'N': image.select('SR_B5'),
+      'G': image.select('SR_B3')
+  }).rename('CVI');
+  return image.addBands(cvi);
+};
+
+// Add CVI to the image
+var l8 = addCVI(l8);
+
+// Define function to calculate CTVI
+var addCTVI = function(image) {
+  var ctvi = image.expression('(((N - R)/(N + R))+0.5)/(abs((N - R)/(N + R))) * sqrt(abs((N - R)/(N + R)))', {
+    'R': image.select('SR_B4'),
+    'N': image.select('SR_B5')
+  }).rename('CTVI');
+  return image.addBands(ctvi);
+};
+
+// Add CTVI to the image
+var l8 = addCTVI(l8);
+
+//Define function to calculate GVMI
+var addGVMI = function(image) {
+  var gvmi = image.expression('((N + 0.1) - (SW2 + 0.02)) / ((N + 0.1) + (SW2 + 0.02)) ', {
+    'N': image.select('SR_B5'),
+    'SW2': image.select('SR_B7')
+      }).rename('GVMI');
+  return image.addBands(gvmi);
+};
+
+// Add GVMI to the image
+var l8 = addGVMI(l8);
+
+//Define function to calculate GARVI
+var addGARVI = function(image) {
+  var garvi = image.expression('(N - (G - (B - R)))/(N - (G + (B - R)))', {
+    'R': image.select('SR_B4'),
+    'B': image.select('SR_B2'),
+    'N': image.select('SR_B5'),
+    'G': image.select('SR_B3')
+      }).rename('GARVI');
+  return image.addBands(garvi);
+};
+
+// Add GARVI to the image
+var l8 = addGARVI(l8);
+
+// Define function to calculate GNDVI
+var addGNDVI = function(image) {
+  var gndvi = image.expression('(N - G) / (N + G)', {
+    'N': image.select('SR_B5'),
+    'G': image.select('SR_B3')
+      }).rename('GNDVI');
+  return image.addBands(gndvi);
+};
+
+// Add GARVI to the image
+var l8 = addGNDVI(l8);
+
+// Define function to calculate IPVI
+var addIPVI = function(image) {
+  var ipvi = image.expression('(N / ((N + R) / 2)) + (((N - R)/(N + R)) + 1)', {
+    'R': image.select('SR_B4'),
+    'N': image.select('SR_B5')
+      }).rename('IPVI');
+  return image.addBands(ipvi);
+};
+
+// Add IPVI to the image
+var l8 = addIPVI(l8);
+
+//Define function to calculate MEVI
+var addMEVI = function(image) {
+  var mevi = image.expression('2.4 * ((N - R) / (N + R + 1))', {
+    'N': image.select('SR_B5'),
+    'R': image.select('SR_B4'),
+    'B': image.select('SR_B2')
+      }).rename('MEVI');
+    return image.addBands(mevi);
+};
+
+// Add MEVI to the image
+var l8 = addMEVI(l8);
+
+//Define function to calculate CLG
+var addCLG = function(image) {
+  var clg = image.expression('(N / G) - 1', {
+    'N': image.select('SR_B5'),
+    'G': image.select('SR_B3')
+      }).rename('CLG');
+    return image.addBands(clg);
+};
+
+// Add CLG to the image
+var l8 = addCLG(l8);
+
+// Define function to calculate SR
+var addSR = function(image) {
+  var sr = image.expression('N / R', {
+    'R': image.select('SR_B4'),
+    'N': image.select('SR_B5')
+      }).rename('SR');
+    return image.addBands(sr);
+};
+
+// Add SR to the image
+var l8 = addSR(l8);
+
+// Define function to calculate NLVI
+var addNLVI = function(image) {
+  var nlvi = image.expression('(B**2 - R)/(B**2 + R)', {
+    'R': image.select('SR_B4'),
+    'B': image.select('SR_B2')
+      }).rename('NLVI');
+    return image.addBands(nlvi);
+};
+
+// Add NLVI to the image
+var l8 = addNLVI(l8);
+
+// Convert the image from RGB to HSV.
+var RGB = l8.select(['SR_B4','SR_B3','SR_B2']);
+var hsv = RGB.rgbToHsv();
+
+// Add the hue, saturation, and value bands to the image.
+var l8 = l8.addBands(hsv.select(['hue', 'saturation', 'value'], ['HUE', 'SATURATION', 'INTEN']));
+
+// Define the function to calculate SHI
+var addSHI = function(image) {
+  var shi = image.expression('(2*R - G - B)/(G - B)', {
+    'R': image.select('SR_B4'),
+    'B': image.select('SR_B2'),
+    'G': image.select('SR_B3')
+      }).rename('SHI');
+    return image.addBands(shi);
+};
+
+// Add SHI to the image
+var l8 = addSHI(l8);
+
+// Define the function to calculate NDPI
+var addNDPI = function(image) {
+  var ndpi = image.expression('((N - (0.74 * R + 0.26 * SW1))/(N + (0.74 * R + 0.26 * SW1)))', {
+    'N': image.select('SR_B5'),
+    'R': image.select('SR_B4'),
+    'SW1': image.select('SR_B6')
+      }).rename('NDPI');
+    return image.addBands(ndpi);
+};
+
+// Add NDPI to the image
+var l8 = addNDPI(l8);
+
+// Define the function to calculate NDTI
+var addNDTI = function(image) {
+  var ndti = image.expression('((SW1 - SW2)/(SW1+SW2))', {
+    'SW2': image.select('SR_B7'),
+    'SW1': image.select('SR_B6')
+      }).rename('NDTI');
+    return image.addBands(ndti);
+};
+
+// Add NDTI to the image
+var l8 = addNDTI(l8);
+
+// Define the function to calculate DFI
+var addDFI = function(image) {
+  var dfi = image.expression('(1-(SW2 / SW1)*(R/N))', {
+    'SW2': image.select('SR_B7'),
+    'SW1': image.select('SR_B6'),
+    'N':image.select('SR_B5'),
+    'R':image.select('SR_B4')
+      }).rename('DFI');
+    return image.addBands(dfi);
+};
+
+// Add NDTI to the image
+var l8 = addDFI(l8).toFloat();
+
+// Print
+print('landsat8',l8)
+
+
+// Reproject to Region of Interst                
+var l8 = l8.reproject({crs: crs_roi,scale: 30});
+
+////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////
+
+
+// Load Sentinel-1 data and filter for the study area and time period for Ascending
+var s1_Asc = ee.ImageCollection('COPERNICUS/S1_GRD')
+  .filterBounds(roi1)
+  .filterDate(startDate, endDate)
+  .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV'))
+  .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VH'))
+  // Filter to get images collected in interferometric wide swath mode.
+  .filter(ee.Filter.eq('instrumentMode', 'IW'))
+  .filter(ee.Filter.eq('orbitProperties_pass', 'ASCENDING'));
+  //.mean()
+  //.clip(studyArea)
+  //.select(['VV','VH']);
+
+// Load Sentinel-1 data and filter for the study area and time period for Descending
+var s1_Desc = ee.ImageCollection('COPERNICUS/S1_GRD')
+  .filterBounds(roi1)
+  .filterDate(startDate, endDate)
+  .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV'))
+  .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VH'))
+  // Filter to get images collected in interferometric wide swath mode.
+  .filter(ee.Filter.eq('instrumentMode', 'IW'))
+  .filter(ee.Filter.eq('orbitProperties_pass', 'DESCENDING'));
+  //.mean()
+  //.clip(studyArea)
+  //.select(['VV','VH']);
+
+var s1_AscDesc = s1_Asc.merge(s1_Desc).median().clip(roi1).select(['VV','VH']);
+
+//print('s1_AscDesc',s1_AscDesc)
+
+// Separate ascending and descending orbit images into distinct collections.
+//var vvVhIwAsc = vvVhIw.filter(ee.Filter.eq('orbitProperties_pass', 'ASCENDING'));
+//var vvVhIwDesc = vvVhIw.filter(ee.Filter.eq('orbitProperties_pass', 'DESCENDING'));
+
+// Calculate temporal means for various observations to use for visualization.
+// Mean VH ascending.
+//var vhIwAscMean = vvVhIwAsc.select('VH').mean();
+// Mean VH descending.
+//var vhIwDescMean = vvVhIwDesc.select('VH').mean();
+// Mean VV for combined ascending and descending image collections.
+var s1_AscDesc_VV =  s1_AscDesc.select('VV');
+// Mean VH for combined ascending and descending image collections.
+var s1_AscDesc_VH =  s1_AscDesc.select('VH');
+
+// Calculate the VH/VV ratio
+var ratio1 = s1_AscDesc_VH.divide(s1_AscDesc_VV).rename('VH/VV');
+
+// Add the ratio as a third band to the Sentinel-1 image
+var s1_with_ratio1 = s1_AscDesc.addBands(ratio1);
+
+// Calculate the VH/VV ratio
+var ratio2 = s1_AscDesc_VV.divide(s1_AscDesc_VH).rename('VV/VH');
+
+// Add the ratio as a fourth band to the Sentinel-1 image
+var s1_with_ratio2 = s1_with_ratio1.addBands(ratio2);
+
+// Calculate the powerRatio
+var powerRatio = s1_with_ratio2.select('VH').abs().pow(2).divide(s1_with_ratio2.select('VV').abs().pow(2)).rename('PR');
+
+// Add the ratio as a fifth band to the Sentinel-1 image
+var s1_with_ratio3 = s1_with_ratio2.addBands(powerRatio);
+
+//// Converted dB to linear
+var s1_dBtolinear = s1_AscDesc.expression('pow(10, db / 10)',{
+  db: s1_AscDesc.select(['VV','VH'])
+}); 
+
+//Calculate the SPAN
+var span = (s1_dBtolinear.select('VV').abs().pow(2).add(s1_dBtolinear.select('VH').abs().pow(2))).divide(2).rename('span');
+
+// Add the ratio as a fifth band to the Sentinel-1 image
+var s1_with_ratio4 = s1_with_ratio3.addBands(span);
+
+
+//Calculate the DI
+var di = (s1_dBtolinear.select('VV').abs().pow(2).subtract(s1_dBtolinear.select('VH').abs().pow(2))).divide(2).rename('di');
+
+// Add the ratio as a fifth band to the Sentinel-1 image
+var s1_with_ratio5 = s1_with_ratio4.addBands(di);
+
+// Calculate the Radar Vegetation Index
+var RVI = (s1_with_ratio5.select('VH').multiply(4)).divide(s1_with_ratio5.select('VH').add(s1_with_ratio5.select('VV'))).rename('RVI');
+
+// Add the ratio as a fifth band to the Sentinel-1 image
+var s1_with_ratio6 = s1_with_ratio5.addBands(RVI);
+
+//  Calculate Normalized Polarized Difference
+var NPDI = (s1_with_ratio5.select('VV').subtract(s1_with_ratio5.select('VH'))).divide((s1_with_ratio5.select('VV').add(s1_with_ratio5.select('VH')))).rename('NPDI');
+
+// Add the NPDI as a sixth band to the Sentinel-1 image
+var s1_with_ratio7 = s1_with_ratio6.addBands(NPDI);
+
+// Display layer to the map
+//Map.addLayer(s1_with_ratio7.select('NPDI'),{min:-1, max:0}, 'NPDI');
+
+print('s1_2019', s1_with_ratio7);
+
+
+// Reproject to Region of Interst                
+var s1_with_ratio7 = s1_with_ratio7.reproject({crs: crs_roi,scale: 30});
+
+/////////////////////////////////////////////////////////////////////////////////////////////
+
+// Define the start and end date of the analysis period - 2015
+var startDate_1 = '2020-01-01'; // March
+var endDate_1 = '2020-12-31'; // August
+                 
+var dataset = ee.ImageCollection('JAXA/ALOS/PALSAR/YEARLY/SAR_EPOCH')
+                  .filter(ee.Filter.date(startDate_1, endDate_1))
+                  .filterBounds(roi1)
+                  .map(function(image) {
+                    return image.clip(roi1);
+                  });
+
+// apply: γ₀ = 10log₁₀(DN²) - 83.0 dB
+var DN = dataset.first(); // Select the first image in the collection
+
+var dB = DN.expression('10*log10(b()*b())-83.0', {b: DN});
+
+// Only HH & HV
+
+var PL = dB.select(0,1);
+
+// NPDI
+
+var NPDI_1 = (PL.select('HH').subtract(PL.select('HV'))).divide((PL.select('HH').add(PL.select('HV')))).rename('NPDI');
+
+// Add the NPDI as a third band to the PL image
+var PL = PL.addBands(NPDI_1);
+
+// ESPRIT
+
+var ESPRIT = (PL.select('HH').add(PL.select('HV'))).divide(2).rename('ESPRIT');
+
+// Add the NPDI as a third band to the PL image
+var PL = PL.addBands(ESPRIT);
+
+// Difference
+
+var DIFF = (PL.select('HH').subtract(PL.select('HV'))).rename('DIFF');
+
+// Add the NPDI as a third band to the PL image
+var PL = PL.addBands(DIFF);
+
+// Ratio
+
+var Ratio = (PL.select('HH').divide(PL.select('HV'))).rename('Ratio');
+
+// Add the NPDI as a third band to the PL image
+var PL = PL.addBands(Ratio);
+
+print('PALSAR2019',PL);
+
+// Reproject to Region of Interst                
+var PL = PL.reproject({crs: crs_roi,scale: 30});
+
+/////////////////////////////////////////////////////////////////////////////////////////////
+// Merge the predictor variables
+var mergedCollection = S2_composite
+  .addBands(PRS_VV_iqr
+  .addBands(PRS_VH_iqr
+  .addBands(elevation
+  .addBands(slope
+  .addBands(forest_mask
+  .addBands(l8
+  .addBands(s1_with_ratio7
+  .addBands(PL))))))));
+
+// Clip to the output image to Harare study area boundary.
+var clippedmergedCollection = mergedCollection.clip(roi1);
+
+print('clippedmergedCollection: ', clippedmergedCollection);
+
+// Bands to include in the classification  , 'CLG' , 'IPVI' 'RVI', , 'Ratio' , 'SR'
+var bands = ['B11', 'B12', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 
+            'VV_iqr', 'VH_iqr', 'elevation', 'slope', 'SR_B1', 'SR_B2', 'SR_B3',  
+            'SR_B4', 'SR_B5', 'SR_B6', 'SR_B7', 'NDVI', 'EVI', 'SAVI','MSAVI',
+            'NDWI', 'VARI', 'TCB', 'TCG', 'TCW', 'NBR', 'AFVI', 'AVI', 'BWDRVI', 'CVI', 'CTVI',
+            'GVMI', 'GARVI', 'GNDVI', 'MEVI', 'NLVI', 'HUE', 'SATURATION',
+            'INTEN', 'SHI', 'NDPI', 'NDTI', 'DFI', 'PR', 'span', 'di',  'NPDI', 'HH',
+            'HV', 'NPDI_1', 'ESPRIT', 'DIFF'];
+
+////////////////////////////////////////////////////////////////////////////
+// Prepare training dataset
+//The Global Ecosystem Dynamics Investigation (GEDI) 
+// GEDI's Level 2A Geolocated Elevation and Height Metrics Product (GEDI02_A) is primarily composed of 
+// 100 Relative Height (RH) metrics, which collectively describe the waveform collected by GEDI.
+// The original GEDI02_A product is a table of point with a spatial resolution (average footprint) of 25 meters. 
+// More information at https://lpdaac.usgs.gov/documents/986/GEDI02_UserGuide_V2.pdf
+
+// Define a mask
+var qualityMask = function(im) {
+  return im.updateMask(im.select('quality_flag').eq(1))
+      .updateMask(im.select('degrade_flag').eq(0));
+};
+
+// Import the "EDI02_A_002_MONTHLY: dataset ('rh98 (98th Percentile of Relative Height)' can be varied accordingly to the need)
+var dataset = ee.ImageCollection('LARSE/GEDI/GEDI02_A_002_MONTHLY')
+  .filter(ee.Filter.date(startDate_1, endDate_1))
+  .map(qualityMask)
+  .select('rh98')
+  .filterBounds(roi1)
+  .map(function(image) {
+    return image.clip(roi1);
+  });
+                  
+
+print('dataset', dataset);
+
+// Create a pallete to visualize the dataset
+var gediVis = {
+  min: 1,
+  max: 60,
+  palette: 'darkred,red,orange,green,darkgreen',
+};
+
+Map.addLayer(dataset, gediVis, 'rh98');
+
+// Define projection and scale parameters
+var projection = dataset.first().projection().aside(print);
+print('Var_Projection',projection);
+var scale = projection.nominalScale().aside(print);
+print('Var_Scale',scale);
+
+var mosaic = dataset.mosaic().setDefaultProjection({crs:projection, scale:scale});
+print('mosaic', mosaic);
+
+// Sample Points from the dataset (Can be varied accordingly to the requirement/study)
+var points = mosaic.sample({
+  region: roi1,
+  scale: scale,
+  numPixels: 74000, 
+  projection: projection,
+  geometries: true});
+
+// Check the number of the training points
+print(points.size());
+print(points.limit(10));
+//print('Points', points);
+// Display the training points
+//Map.addLayer(points);
+
+// Add a random column (named random) and specify seed value for repeatability.
+var datawithColumn = points.randomColumn('random', 70);
+//print('column_data', datawithColumn);
+
+// Traning (70%) and Validation data (30%) split (Can be varied accordingly to the requirement/study)
+var split = 0.8; 
+var trainingData = datawithColumn.filter(ee.Filter.lt('random', split));
+
+// Print the training data
+print('training data', trainingData);
+
+var validationData = datawithColumn.filter(ee.Filter.gte('random', split));
+
+// Print the testing (validation) data
+print('validation data', validationData);
+
+//////////////////////////////////////////////////////////////////////
+// Perform regression modeling using RF classifier
+
+// Collect training data
+var training = clippedmergedCollection.select(bands).sampleRegions({
+  collection: trainingData,
+  properties: ['rh98'],
+  scale: 30 // Need to change the scale of training data to avoid the 'out of memory' problem
+  });
+
+print('training data original', training);
+
+// Train a random forest classifier for regression 
+//var classifier = ee.Classifier.smileRandomForest(5000)               //Number of Tress can be varied to obtain the Optimzed Results
+//  .setOutputMode('REGRESSION')
+//  .train({
+//    features: training, 
+//    classProperty: "rh98",
+//    inputProperties: bands
+//    });
+
+// CART Regressor
+//var classifier = ee.Classifier.smileCart(400)
+// .setOutputMode('REGRESSION')
+// .train({
+//   features: training,
+//   classProperty: "rh98",
+//   inputProperties: bands
+//});
+
+//GradientTreeBoost
+var classifier = ee.Classifier.smileGradientTreeBoost(4000,0.005,0.7,null,"LeastSquares",42)
+ .setOutputMode('REGRESSION')
+ .train({
+   features: training,
+   classProperty: "rh98",
+   inputProperties: bands
+});
+
+//Run the classification and clip it to the boundary
+var regression = clippedmergedCollection.select(bands).classify(classifier, 'predicted').clip(roi1);
+print('Regresssion', regression);
+
+// Load and define a continuous palette
+var palettes = require('users/gena/packages:palettes');
+
+// Choose and define a palette
+var palette = palettes.colorbrewer.YlGn[5];
+
+// Display the input imagery and the regression classification 
+//get dictionaries of min & max predicted value
+var regressionMin = (regression.reduceRegion({
+  reducer: ee.Reducer.min(),
+  scale: 30, 
+  crs: crs_roi,
+  geometry: roi1,
+  bestEffort: true,
+  tileScale: 5
+}));
+
+//print('RegressionMin',regressionMin);
+var regressionMax = (regression.reduceRegion({
+  reducer: ee.Reducer.max(),
+  scale: 30, 
+  crs: crs_roi,
+  geometry: roi1,
+  bestEffort: true,
+  tileScale: 5
+}));
+  
+// Add to map
+var viz = {palette: palette,
+  min: 0,
+  max: 100};
+
+//Map.addLayer(regression,'Regression');
+
+// Create the panel for the legend items.
+var legend = ui.Panel({
+  style: {
+    position: 'bottom-left',
+    padding: '8px 15px'
+  }
+});
+
+// Create and add the legend title.
+var legendTitle = ui.Label({
+  value: 'TC Height (in m)',
+  style: {
+    fontWeight: 'bold',
+    fontSize: '18px',
+    margin: '0 0 4px 0',
+    padding: '0'
+  }
+});
+
+legend.add(legendTitle);
+
+// create the legend image
+var lon = ee.Image.pixelLonLat().select('latitude');
+var gradient = lon.multiply((viz.max-viz.min)/100.0).add(viz.min);
+var legendImage = gradient.visualize(viz);
+ 
+// create text on top of legend
+var panel = ui.Panel({
+widgets: [
+ui.Label(viz['max'])
+],
+});
+
+legend.add(panel);
+
+// create thumbnail from the image
+var thumbnail = ui.Thumbnail({
+image: legendImage,
+params: {bbox:'0,0,10,100', dimensions:'10x200'},
+style: {padding: '1px', position: 'bottom-center'}
+});
+ 
+// add the thumbnail to the legend
+legend.add(thumbnail);
+ 
+// create text on top of legend
+var panel = ui.Panel({
+widgets: [
+ui.Label(viz['min'])
+],
+});
+
+legend.add(panel);
+Map.add(legend);
+
+// Zoom to the regression on the map
+Map.centerObject(roi1, 11);
+
+// Check model performance
+// Get details of classifier
+var classifier_details = classifier.explain();
+print('Calssifier Details', classifier_details);
+
+// Explain the classifier with importance values
+var variable_importance = ee.Feature(null, ee.Dictionary(classifier_details).get('importance'));
+print('Var_imp', variable_importance);
+
+var chart =
+  ui.Chart.feature.byProperty(variable_importance)
+  .setChartType('ColumnChart')
+  .setOptions({
+  title: 'Random Forest Variable Importance',
+  legend: {position: 'none'},
+  hAxis: {title: 'Bands'},
+  vAxis: {title: 'Importance'}
+});
+
+// Plot a chart
+//print("Variable importance:", chart);
+
+// Create model assessment statistics
+// Get predicted regression points in same location as training data
+var predictedTraining = regression.sampleRegions({collection:trainingData, scale: 30, geometries: true});
+print('predictedTraining', predictedTraining);
+
+// Separate the observed (agb_GEDI) and predicted (regression) properties
+var sampleTraining = predictedTraining.select(['rh98', 'predicted']);
+print('sampleTraining', sampleTraining);
+
+// Create chart, print it
+//var chartTraining = ui.Chart.feature.byFeature(sampleTraining, 'rh98', 'predicted')
+//.setChartType('ScatterChart').setOptions({
+//title: 'Predicted vs Observed - Training data ',
+//hAxis: {'title': 'observed'},
+//vAxis: {'title': 'predicted'},
+//pointSize: 3,
+//trendlines: { 0: {showR2: true, visibleInLegend: true} ,
+//1: {showR2: true, visibleInLegend: true}}});
+//print(chartTraining);
+
+// Compute Root Mean Squared Error (RMSE)
+// Get array of observation and prediction values 
+var observationTraining = ee.Array(sampleTraining.aggregate_array('rh98'));
+
+var predictionTraining = ee.Array(sampleTraining.aggregate_array('predicted'));
+
+// Compute residuals
+var residualsTraining = observationTraining.subtract(predictionTraining);
+
+// Compute RMSE with equation and print the result
+var rmseTraining = residualsTraining.pow(2).reduce('mean', [0]).sqrt();
+print('Training RMSE', rmseTraining);
+
+/////////////////////////////////////////////////////////////////////////////
+//Perform validation
+// Get predicted regression points in same location as validation data
+var predictedValidation = regression.sampleRegions({collection:validationData, geometries: true});
+
+// Separate the observed (rh98) and predicted (regression) properties
+var sampleValidation = predictedValidation.select(['rh98', 'predicted']);
+
+// Create chart and print it
+//var chartValidation = ui.Chart.feature.byFeature(sampleValidation, 'predicted', 'rh98')
+//.setChartType('ScatterChart').setOptions({
+//title: 'Predicted vs Observed - Validation data',
+//hAxis: {'title': 'predicted'},
+//vAxis: {'title': 'observed'},
+//pointSize: 3,
+//trendlines: { 0: {showR2: true, visibleInLegend: true} ,
+//1: {showR2: true, visibleInLegend: true}}});
+//print(chartValidation);
+
+// Compute RMSE
+// Get array of observation and prediction values 
+var observationValidation = ee.Array(sampleValidation.aggregate_array('rh98'));
+
+var predictionValidation = ee.Array(sampleValidation.aggregate_array('predicted'));
+
+// Compute residuals
+var residualsValidation = observationValidation.subtract(predictionValidation);
+print('residualsValidation',residualsValidation);
+
+// Compute RMSE with equation and print it
+var rmseValidation = residualsValidation.pow(2).reduce('mean', [0]).sqrt();
+print('Validation RMSE', rmseValidation);
+
+///////////////////////////////////////////////////////////////////////////
+// Export the image, specifying scale and region.
+Export.image.toDrive({
+  image: regression,
+  description: 'Canopy_Height',
+  scale: 30,
+  crs: crs_roi,
+  maxPixels: 10000000000000,
+  region: roi1
+});
+
+//var fc = ee.FeatureCollection(roi1);
+
+//Export.table.toDrive({
+  //collection:fc
+//});
